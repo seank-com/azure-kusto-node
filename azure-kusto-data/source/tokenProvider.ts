@@ -1,9 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-import { AuthenticationResult, PublicClientApplication, ConfidentialClientApplication } from "@azure/msal-node";
+import { AuthenticationResult, ConfidentialClientApplication, PublicClientApplication } from "@azure/msal-node";
 import { DeviceCodeResponse } from "@azure/msal-common";
-import { ManagedIdentityCredential, AzureCliCredential} from "@azure/identity";
-import { CloudSettings, CloudInfo } from "./cloudSettings"
+import { AzureCliCredential, ManagedIdentityCredential } from "@azure/identity";
+import { CloudInfo, CloudSettings } from "./cloudSettings"
+import * as http from "http";
+import { AddressInfo } from "net";
+import { withTimeout } from "./utils";
+import openBrowser from "open";
 
 export declare type TokenResponse = {
     tokenType: string;
@@ -78,7 +82,7 @@ export class MsiTokenProvider extends TokenProviderBase {
 
     async acquireToken(): Promise<TokenResponse> {
         if (this.managedIdentityCredential == null) {
-            this.managedIdentityCredential = this.clientId  ? new ManagedIdentityCredential(this.clientId) : new ManagedIdentityCredential();
+            this.managedIdentityCredential = this.clientId ? new ManagedIdentityCredential(this.clientId) : new ManagedIdentityCredential();
         }
         const msiToken = await this.managedIdentityCredential.getToken(this.kustoUri);
         if (msiToken?.token != null) {
@@ -104,7 +108,7 @@ export class AzCliTokenProvider extends TokenProviderBase {
         }
         const response = await this.azureCliCredentials.getToken(this.scopes);
 
-        if(response){
+        if (response) {
             return { tokenType: BEARER_TYPE, accessToken: response.token };
         }
         throw new Error(`"Failed to obtain AzCli token for '${this.kustoUri}'`)
@@ -118,7 +122,9 @@ abstract class MsalTokenProvider extends TokenProviderBase {
     cloudInfo!: CloudInfo;
     authorityId?: string;
     initialized: boolean;
+
     abstract initClient(): void;
+
     abstract acquireMsalToken(): Promise<AuthenticationResult | null>;
 
     constructor(kustoUri: string, authorityId?: string) {
@@ -296,5 +302,79 @@ export class ApplicationCertificateTokenProvider extends MsalTokenProvider {
 
     acquireMsalToken(): Promise<AuthenticationResult | null> {
         return this.msalClient.acquireTokenByClientCredential({ scopes: this.scopes });
+    }
+}
+
+export class InteractiveTokenProvider extends MsalTokenProvider {
+    msalClient!: PublicClientApplication;
+
+    constructor(kustoUri: string, authorityId?: string, private loginHint?: string, private domainHint?: string, private timeoutMs?: number) {
+        super(kustoUri, authorityId);
+    }
+
+    async acquireMsalToken(): Promise<AuthenticationResult | null> {
+
+        let resolveCode: (s: string) => void;
+        let rejectCode: (e: any) => void;
+        let codePromise = new Promise<string>((resolve, reject) => {
+            resolveCode = resolve;
+            rejectCode = reject;
+        })
+        const server = http.createServer((request, response) => {
+
+            const parsed = new URL(request.url as string, "http://dummy/")
+
+            const extractedCode = parsed.searchParams.get("code") as string;
+            if (extractedCode) {
+                resolveCode(extractedCode);
+                response.writeHead(200, { 'Content-Type': 'text/plain' });
+                response.write("Login successful. You may close the window.");
+
+            } else if (parsed.searchParams.get("error")) {
+                const error = {
+                    error: parsed.searchParams.get("error"),
+                    error_subcode: parsed.searchParams.get("error_subcode"),
+                    error_description: parsed.searchParams.get("error_description"),
+                    error_uri: parsed.searchParams.get("error_uri"),
+                };
+                rejectCode(error);
+                response.writeHead(400, { 'Content-Type': 'text/plain' });
+                response.write("Error - " + JSON.stringify(error));
+            }
+
+            response.end();
+        });
+
+        try {
+            server.listen();
+            const address = server.address() as AddressInfo;
+            const addressStr = `http://localhost:${address.port}`
+            const url = await this.msalClient.getAuthCodeUrl({
+                scopes: this.scopes,
+                loginHint: this.loginHint,
+                domainHint: this.domainHint,
+                redirectUri: addressStr
+            });
+
+            await openBrowser(url);
+
+            if (this.timeoutMs) {
+                codePromise = withTimeout(this.timeoutMs, codePromise);
+            }
+
+            return this.msalClient.acquireTokenByCode({ scopes: this.scopes, redirectUri: addressStr, code: await codePromise });
+        } finally {
+            server.close();
+        }
+    }
+
+    initClient(): void {
+        const clientConfig = {
+            auth: {
+                clientId: this.cloudInfo.KustoClientAppId,
+                authority: CloudSettings.getAuthorityUri(this.cloudInfo, this.authorityId),
+            },
+        };
+        this.msalClient = new PublicClientApplication(clientConfig);
     }
 }

@@ -333,3 +333,8 @@ ASALocalRun/
 package.json
 __main.js
 package-lock.json
+
+*.js
+*.js.map
+*.d.ts
+!example.js

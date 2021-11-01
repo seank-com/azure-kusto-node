@@ -54,6 +54,16 @@ const KeywordMapping: { [name: string]: MappingType } = Object.freeze({
         propName: "authorityId",
         mappedTo: "Authority Id",
         validNames: ["authority id", "authorityid", "authority", "tenantid", "tenant", "tid"]
+    },
+    loginHint: {
+        propName: "loginHint",
+        mappedTo: "Login Hint",
+        validNames: ["login hint"]
+    },
+    domainHint: {
+        propName: "domainHint",
+        mappedTo: "Domain hint",
+        validNames: ["domain hint"]
     }
 });
 
@@ -70,7 +80,7 @@ const getPropName = (key: string): string => {
 };
 
 export class KustoConnectionStringBuilder {
-    [prop: string]: string | boolean | ((info: DeviceCodeResponse) => void) |  undefined;
+    [prop: string]: string | boolean | ((info: DeviceCodeResponse) => void) | number | undefined;
     dataSource?: string;
     aadUserId?: string;
     password?: string;
@@ -80,6 +90,9 @@ export class KustoConnectionStringBuilder {
     applicationCertificateThumbprint?: string;
     authorityId?: string;
     deviceCodeCallback?: (response: DeviceCodeResponse) => void;
+    loginHint?: string;
+    domainHint?: string;
+    timeoutMs?: number;
 
     constructor(connectionString: string) {
         if (!connectionString || connectionString.trim().length === 0) throw new Error("Missing connection string");
@@ -169,6 +182,18 @@ export class KustoConnectionStringBuilder {
         const kcsb = new KustoConnectionStringBuilder(connectionString);
 
         kcsb.accessToken = accessToken;
+
+        return kcsb;
+    }
+
+    static withInteractiveLogin(connectionString: string, authorityId?: string, loginHint?: string, domainHint?: string, timeoutMs: number = 60000) {
+        const kcsb = new KustoConnectionStringBuilder(connectionString);
+
+        kcsb.interactiveLogin = true;
+        kcsb[KeywordMapping.authorityId.propName] = authorityId || "common";
+        kcsb[KeywordMapping.loginHint.propName] = loginHint;
+        kcsb[KeywordMapping.domainHint.propName] = domainHint;
+        kcsb.timeoutMs = timeoutMs;
 
         return kcsb;
     }
