@@ -330,6 +330,5 @@ ASALocalRun/
 .mfractor/
 
 .vscode
-package.json
 __main.js
 package-lock.json
